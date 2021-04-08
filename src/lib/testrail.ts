@@ -1,109 +1,185 @@
-import request = require("unirest");
-import {TestRailOptions, TestRailResult} from "./testrail.interface";
+const axios = require('axios');
+const deasync = require('deasync');
+const fs = require('fs');
+const path = require('path');
+const FormData = require('form-data');
+const TestRailLogger = require('./testrail.logger');
+const TestRailCache = require('./testrail.cache');
+import { TestRailOptions, TestRailResult } from './testrail.interface';
 
-/**
- * TestRail basic API wrapper
- */
 export class TestRail {
-    private base: String;
+  private base: String;
+  private runId: Number;
+  private includeAll: Boolean = true;
+  private caseIds: Number[] = [];
+  private retries: number;
 
-    constructor(private options: TestRailOptions) {
-        // compute base url
-        this.base = `https://${options.domain}/index.php`;
+  constructor(private options: TestRailOptions) {
+    this.base = `${options.host}/index.php?/api/v2`;
+    this.runId;
+  }
+
+  /**
+   * To work around a Cypress issue where Mocha exits before async requests
+   * finish, we use the deasync library to ensure our axios promises
+   * actually complete. For more information, see:
+   * https://github.com/cypress-io/cypress/issues/7139
+   * @param promise A `finally` condition will be appended to this promise, enabling a deasync loop
+   */
+  private makeSync(promise) {
+    let done = false;
+    let result = undefined;
+    (async() => result = await promise.finally(() => done = true))();
+    deasync.loopWhile(() => !done);
+    return result;
+  }
+
+  public getCases () {
+    let url = `${this.base}/get_cases/${this.options.projectId}&suite_id=${this.options.suiteId}`
+    if (this.options.groupId) {
+      url += `&section_id=${this.options.groupId}`
     }
-
-    private _post(api: String, body: any, callback: Function, error?: Function) {
-        var req = request("POST", this.base)
-            .query(`/api/v2/${api}`)
-            .headers({
-                "content-type": "application/json"
-            })
-            .type("json")
-            .send(body)
-            .auth(this.options.username, this.options.password)
-            .end((res) => {
-                if (res.error) {
-                    console.log("Error: %s", JSON.stringify(res.body));
-                    if (error) {
-                        error(res.error);
-                    } else {
-                        throw new Error(res.error);
-                    }
-                }
-                callback(res.body);
-            });
+    if (this.options.filter) {
+      url += `&filter=${this.options.filter}`
     }
+    return this.makeSync(
+      axios({
+        method:'get',
+        url: url,
+        headers: { 'Content-Type': 'application/json' }, 
+        auth: {
+            username: this.options.username,
+            password: this.options.password
+        } 
+      })
+      .then(response => {
+        return response.data.map(item =>item.id)
+      })
+      .catch(error => console.error(error))
+    )
+  }
 
-    private _get(api: String, callback: Function, error?: Function) {
-        var req = request("GET", this.base)
-            .query(`/api/v2/${api}`)
-            .headers({
-                "content-type": "application/json"
-            })
-            .type("json")
-            .auth(this.options.username, this.options.password)
-            .end((res) => {
-                if (res.error) {
-                    console.log("Error: %s", JSON.stringify(res.body));
-                    if (error) {
-                        error(res.error);
-                    } else {
-                        throw new Error(res.error);
-                    }
-                }
-                callback(res.body);
-            });
+  public createRun (name: string, description: string, suiteId: number) {
+    if (this.options.includeAllInTestRun === false){
+      this.includeAll = false;
+      this.caseIds = this.getCases();
     }
+    this.makeSync(
+      axios({
+        method: 'post',
+        url: `${this.base}/add_run/${this.options.projectId}`,
+        headers: { 'Content-Type': 'application/json' },
+        auth: {
+          username: this.options.username,
+          password: this.options.password,
+        },
+        data: JSON.stringify({
+          suite_id: suiteId,
+          name,
+          description,
+          include_all: this.includeAll,
+          case_ids: this.caseIds
+        }),
+      })
+      .then(response => {
+          this.runId = response.data.id;
+          // cache the TestRail Run ID
+          TestRailCache.store('runId', this.runId);
+      })
+      .catch(error => console.error(error))
+    );
+  }
 
-    /**
-     * Fetchs test cases from projet/suite based on filtering criteria (optional)
-     * @param {{[p: string]: number[]}} filters
-     * @param {Function} callback
-     */
-    public fetchCases(filters?: { [key: string]: number[] }, callback?: Function): void {
-        let filter = "";
-        if(filters) {
-            for (var key in filters) {
-                if (filters.hasOwnProperty(key)) {
-                    filter += "&" + key + "=" + filters[key].join(",");
-                }
-            }
+  public deleteRun() {
+    this.runId = TestRailCache.retrieve('runId');
+    this.makeSync(
+      axios({
+        method: 'post',
+        url: `${this.base}/delete_run/${this.runId}`,
+        headers: { 'Content-Type': 'application/json' },
+        auth: {
+          username: this.options.username,
+          password: this.options.password,
+        },
+      }).catch(error => console.error(error))
+    )
+  }
+
+  public publishResults(results: TestRailResult[]) {
+    this.runId = TestRailCache.retrieve('runId');
+    return this.makeSync(
+      axios({
+        method: 'post',
+        url: `${this.base}/add_results_for_cases/${this.runId}`,
+        headers: { 'Content-Type': 'application/json' },
+        auth: {
+          username: this.options.username,
+          password: this.options.password,
+        },
+        data: JSON.stringify({ results }),
+      })
+      .then(response => response.data)
+      .catch(error => { 
+        console.error(error); 
+      })
+    )
+  }
+
+  public uploadAttachment (resultId, path) {
+    const form = new FormData();
+    form.append('attachment', fs.createReadStream(path));
+
+    this.makeSync(
+      axios({
+        method: 'post',
+        url: `${this.base}/add_attachment_to_result/${resultId}`,
+        headers: { ...form.getHeaders() },
+        auth: {
+          username: this.options.username,
+          password: this.options.password,
+        },
+        data: form,
+      })
+    )
+  }
+
+  // This function will attach failed screenshot on each test result(comment) if founds it
+  public uploadScreenshots (caseId, resultId) {
+    const SCREENSHOTS_FOLDER_PATH = path.join(__dirname, 'cypress/screenshots');
+
+    fs.readdir(SCREENSHOTS_FOLDER_PATH, (err, files) => {
+      if (err) {
+        return console.log('Unable to scan screenshots folder: ' + err);
+      } 
+
+      files.forEach(file => {
+        if (file.includes(`C${caseId}`) && /(failed|attempt)/g.test(file)) {
+          try {
+            this.uploadAttachment(resultId, SCREENSHOTS_FOLDER_PATH + file)
+          } catch (err) {
+            console.log('Screenshot upload error: ', err)
+          }
         }
+      });
+    });
+  };
 
-        let req = this._get(`get_cases/${this.options.projectId}&suite_id=${this.options.suiteId}${filter}`, (body) => {
-            if (callback) {
-                callback(body);
-            }
-        });
-    }
-
-    /**
-     * Publishes results of execution of an automated test run
-     * @param {string} name
-     * @param {string} description
-     * @param {TestRailResult[]} results
-     * @param {Function} callback
-     */
-    public publish(name: string, description: string, results: TestRailResult[], callback?: Function): void {
-        console.log(`Publishing ${results.length} test result(s) to ${this.base}`);
-
-        this._post(`add_run/${this.options.projectId}`, {
-            "suite_id": this.options.suiteId,
-            "name": name,
-            "description": description,
-            "assignedto_id": this.options.assignedToId,
-            "include_all": true
-        }, (body) => {
-            const runId = body.id
-            console.log(`Results published to ${this.base}?/runs/view/${runId}`)
-            this._post(`add_results_for_cases/${runId}`, {
-                results: results
-            }, (body) => {
-                // execute callback if specified
-                if (callback) {
-                    callback();
-                }
-            })
-        });
-    }
+  public closeRun() {
+    this.runId = TestRailCache.retrieve('runId');
+    this.makeSync(
+      axios({
+        method: 'post',
+        url: `${this.base}/close_run/${this.runId}`,
+        headers: { 'Content-Type': 'application/json' },
+        auth: {
+          username: this.options.username,
+          password: this.options.password,
+        },
+      })
+      .then(() => {
+          TestRailLogger.log('Test run closed successfully');
+      })
+      .catch(error => console.error(error))
+    );
+  }
 }

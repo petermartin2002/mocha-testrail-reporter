@@ -1,58 +1,139 @@
-#Testrail Reporter for Mocha
+# TestRail Reporter for Cypress
 
-[![npm version](https://badge.fury.io/js/mocha-testrail-reporter.svg)](https://badge.fury.io/js/mocha-testrail-reporter)
+[![version](https://img.shields.io/npm/v/cypress-testrail-reporter.svg)](https://www.npmjs.com/package/cypress-testrail-reporter)
+[![downloads](https://img.shields.io/npm/dt/cypress-testrail-reporter.svg)](https://www.npmjs.com/package/cypress-testrail-reporter)
+[![MIT License](https://img.shields.io/github/license/Vivify-Ideas/cypress-testrail-reporter.svg)](https://github.com/Vivify-Ideas/cypress-testrail-reporter/blob/master/LICENSE.md)
 
-Pushes test results into Testrail system.
+Publishes [Cypress](https://www.cypress.io/) runs on TestRail. 
 
-## Installation
+Core features:
+
+* Test results are aggregated under the same test run if you are executing more spec(test) files and they are belongs to the same suite
+* Results are reported immediately after single test execution (real-time reporting)
+* Test run would be closed after last spec(test) file has been finished
+* Possibility to upload screenshots for failed and retried test cases - optional (**allowFailedScreenshotUpload: true**)
+* Multi suite project support (set **suiteId=1** in **cypress.json** or set it as a part of runtime environment variables as **testRailSuiteId=1**)
+* Reporting retest status of a test cases - handy in terms of marking tests as flaky (test is reported with retest status for the first try and after second try it passes) Note: cypress retry logic must be enabled for this feature.  
+
+
+## Install
 
 ```shell
-$ npm install mocha-testrail-reporter --save-dev
+$ npm install cypress-testrail-reporter --save-dev
 ```
 
 ## Usage
-Ensure that your testrail installation API is enabled and generate your API keys. See http://docs.gurock.com/
 
-Run mocha with `mocha-testrail-reporter`:
+Add reporter to your `cypress.json`:
 
-```shell
-$ mocha test --reporter mocha-testrail-reporter --reporter-options domain=instance.testrail.net,username=test@example.com,password=12345678,projectId=1,suiteId=1
+```json
+...
+"reporter": "cypress-testrail-reporter",
+"reporterOptions": {
+  "host": "https://yourdomain.testrail.com",
+  "username": "username",
+  "password": "password",
+  "projectId": 1,
+  "suiteId": 1,
+}
 ```
 
-or use a mocha.options file
-```shell
-mocha --opts mocha-testrail.opts build/test
---recursive
---reporter mocha-testrail-reporter
---reporter-options domain=instance.testrail.net,username=test@example.com,password=12345678,projectId=1,suiteId=1
---no-exit
-```
+Your Cypress tests should include the ID of your TestRail test case. Make sure your test case IDs are distinct from your test titles:
 
-
-Mark your mocha test names with ID of Testrail test cases. Ensure that your case ids are well distinct from test descriptions.
- 
 ```Javascript
-it("C123 C124 Authenticate with invalid user", . . .
-it("Authenticate a valid user C321", . . .
+// Good:
+it("C123 C124 Can authenticate a valid user", ...
+it("Can authenticate a valid user C321", ...
+
+// Bad:
+it("C123Can authenticate a valid user", ...
+it("Can authenticate a valid userC123", ...
 ```
 
-Only passed or failed tests will be published. Skipped or pending tests will not be published resulting in a "Pending" status in testrail test run.
+## Reporter Options
 
-## Options
+**host**: _string_ host of your TestRail instance (e.g. for a hosted instance _https://instance.testrail.com_).
 
-**domain**: *string* domain name of your Testrail instance (e.g. for a hosted instance instance.testrail.net)
+**username**: _string_ email of the user under which the test run will be created. When you set `CYPRESS_TESTRAIL_REPORTER_USERNAME` in
+environment variables, this option would be overwritten with it.
 
-**username**: *string* user under which the test run will be created (e.g. jenkins or ci)
+**password**: _string_ password or the API key for the aforementioned user. When you set `CYPRESS_TESTRAIL_REPORTER_PASSWORD` in runtime environment variables, this option would be overwritten with it.
 
-**password**: *string* password or API token for user
+**projectId**: _number_ project with which the tests are associated.
 
-**projectId**: *number* projet number with which the tests are associated
+**suiteId**: _number_ suite with which the tests are associated. Optional under **cypress.json** file in case that you define **suiteId** under **gitlab-ci.yml** file or set this value in runtime environment varables.
 
-**suiteId**: *number* suite number with which the tests are associated
+**runName**: _string_ (optional) name of the Testrail run.
 
-**assignedToId**: *number* (optional) user id which will be assigned failed tests
+**disableDescription**: _bool_ (optional: default is false) possibility to disable description for test run in case that someone don’t have cypress dashboard feature (_disableDescription: true_)
 
-## References
-- http://mochajs.org/#mochaopts
-- https://github.com/mochajs/mocha/wiki/Third-party-reporters
-- http://docs.gurock.com/testrail-api2/start
+**allowFailedScreenshotUpload**: _bool_ (optional: default is false) will upload failed screenshot to corresponding test result comment for easier debugging of failure.
+
+**includeAllInTestRun**: _bool_ (optional: default is true) will return all test cases in test run. set to false to return test runs based on filter or section/group.
+
+**groupId**: _string_ (optional: needs "includeAllInTestRun": false ) The ID of the section/group
+
+**filter**: _string_ (optional: needs "includeAllInTestRun": false) Only return cases with matching filter string in the case title
+
+## Multiple suite
+
+This reporter can handle multiple suite project in TestRail. In order to use it, don't define **suiteId** under **cypress.json** file and instead you should pass **testRailSuiteId** variable when you define all other CLI agruments for cypress execution(through command line). If you are using CI integration solution (e.g. GitLab) **testRailSuiteId** can be set before every pipeline job or predefined for each spec (test) file for which suiteId belongs to.
+
+**gitlab-ci.yml** file (Here you can pass **suiteId** as a variable):
+
+```Javascript
+
+e2e_test1:
+  script: 
+    - e2e-setup.sh
+  variables:
+    CYPRESS_SPEC: "cypress/integration/dashboard/*"
+    TESTRAIL_SUITEID: 1
+
+e2e_test2:
+  script: 
+    - e2e-setup.sh
+  variables:
+    CYPRESS_SPEC: "cypress/integration/login/*"
+    TESTRAIL_SUITEID: 2
+```
+
+and use it later during cypress run:
+
+**e2e-setup.sh** file
+
+```Javascript
+
+CYPRESS_OPTIONS="baseUrl=${url},trashAssetsBeforeRuns=false,video=${video},screenshotOnRunFailure=${screenshotOnRunFailure}"
+CYPRESS_ENV="testRailSuiteId=${TESTRAIL_SUITEID}"
+
+npx cypress run --headed --browser chrome --config "${CYPRESS_OPTIONS}" --env="${CYPRESS_ENV}" --spec "${CYPRESS_SPEC}"
+```
+
+## TestRail Settings
+
+To increase security, the TestRail team suggests using an API key instead of a password. You can see how to generate an API key [here](http://docs.gurock.com/testrail-api2/accessing#username_and_api_key).
+
+If you maintain your own TestRail instance on your own server, it is recommended to [enable HTTPS for your TestRail installation](http://docs.gurock.com/testrail-admin/admin-securing#using_https).
+
+For TestRail hosted accounts maintained by [Gurock](http://www.gurock.com/), all accounts will automatically use HTTPS.
+
+You can read the whole TestRail documentation [here](http://docs.gurock.com/).
+
+## Author
+
+Milutin Savovic - [github](https://github.com/mickosav)
+
+## Core contributors
+
+* [Anes Topcic](https://github.com/sakalaca)
+* [FFdhorkin](https://github.com/FFdhorkin)
+
+## License
+
+This project is licensed under the [MIT license](/LICENSE.md).
+
+## Acknowledgments
+
+* [Pierre Awaragi](https://github.com/awaragi), owner of the [mocha-testrail-reporter](https://github.com/awaragi/mocha-testrail-reporter) repository that was forked.
+* [Valerie Thoma](https://github.com/ValerieThoma) and [Aileen Santos](https://github.com/asantos3026) for proofreading the README.md file and making it more understandable.
